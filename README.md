@@ -1,2 +1,0 @@
-# Qgissubidadecapas
-esta app o web es para subir capas geoserver

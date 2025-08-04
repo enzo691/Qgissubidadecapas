@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Subir múltiples GPKG sin WMS</title>
+</head>
+<body>
+  <h2>Subir varios .gpkg a GeoServer sin publicar WMS</h2>
+
+  <form id="formulario">
+    <label>Archivos .gpkg:</label><br />
+    <input type="file" id="archivos" accept=".gpkg" multiple required /><br /><br />
+
+    <label>Workspace:</label><br />
+    <input type="text" id="workspace" required /><br /><br />
+
+    <label>Nombre del Store:</label><br />
+    <input type="text" id="store" placeholder="Se usará el nombre de cada archivo" disabled /><br /><br />
+
+    <label>Ruta en data_dir (carpeta interna):</label><br />
+    <input type="text" id="rutaDataDir" value="Munirawson/archivos" required /><br /><br />
+
+    <label>GeoServer URL:</label><br />
+    <input type="text" id="url" value="http://10.10.7.49:28080/geoserver" required /><br /><br />
+
+    <label>Usuario:</label><br />
+    <input type="text" id="usuario" value="admin" required /><br /><br />
+
+    <label>Contraseña:</label><br />
+    <input type="password" id="clave" required /><br /><br />
+
+    <button type="submit">Subir todos</button>
+  </form>
+
+  <pre id="log" style="background:#eee; padding:10px; margin-top:20px; white-space: pre-wrap;"></pre>
+
+  <script>
+    document.getElementById('formulario').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      const log = document.getElementById('log');
+      log.textContent = '⏳ Procesando...\n';
+
+      const archivos = document.getElementById('archivos').files;
+      const workspace = document.getElementById('workspace').value;
+      const rutaBase = document.getElementById('rutaDataDir').value;
+      const url = document.getElementById('url').value.replace(/\/$/, '');
+      const usuario = document.getElementById('usuario').value;
+      const clave = document.getElementById('clave').value;
+      const auth = 'Basic ' + btoa(`${usuario}:${clave}`);
+
+      // Crear carpeta en data_dir
+      try {
+        const crearCarpeta = await fetch(`${url}/rest/resource/${rutaBase}`, {
+          method: 'POST',
+          headers: {
+            'Authorization': auth,
+            'Content-Type': 'application/xml'
+          },
+          body: '<directory/>'
+        });
+
+        if (crearCarpeta.ok || crearCarpeta.status === 405 || crearCarpeta.status === 409) {
+          log.textContent += `📂 Carpeta '${rutaBase}' lista en el data_dir\n`;
+        } else {
+          throw new Error(`Error al crear carpeta: ${crearCarpeta.status}`);
+        }
+      } catch (err) {
+        log.textContent += `❌ No se pudo crear la carpeta: ${err.message}\n`;
+        return;
+      }
+
+      // Procesar cada archivo
+      for (const archivo of archivos) {
+        try {
+          const rutaCompleta = `${rutaBase}/${archivo.name}`;
+
+          // Subir archivo
+          const subir = await fetch(`${url}/rest/resource/${rutaCompleta}`, {
+            method: 'PUT',
+            headers: {
+              'Authorization': auth,
+              'Content-Type': 'application/octet-stream'
+            },
+            body: archivo
+          });
+
+          if (!subir.ok) {
+            const texto = await subir.text();
+            log.textContent += `❌ ${archivo.name} (Error ${subir.status}): ${texto}\n`;
+            continue;
+          }
+
+          log.textContent += `✅ ${archivo.name} subido a ${rutaCompleta}\n`;
+
+          // Verificar si datastore existe
+          const storeName = archivo.name.replace(/\.gpkg$/i, '');
+
+          const checkStore = await fetch(`${url}/rest/workspaces/${workspace}/datastores/${storeName}`, {
+            method: 'GET',
+            headers: {
+              'Authorization': auth,
+              'Accept': 'application/xml'
+            }
+          });
+
+          if (checkStore.ok) {
+            log.textContent += `ℹ️ Store '${storeName}' ya existe, se omite creación\n`;
+          } else if (checkStore.status === 404) {
+            // Crear datastore
+            const body = `
+              <dataStore>
+                <name>${storeName}</name>
+                <connectionParameters>
+                  <entry key="dbtype">geopkg</entry>
+                  <entry key="database">file:${rutaCompleta}</entry>
+                </connectionParameters>
+              </dataStore>
+            `;
+
+            const crearStore = await fetch(`${url}/rest/workspaces/${workspace}/datastores`, {
+              method: 'POST',
+              headers: {
+                'Authorization': auth,
+                'Content-Type': 'application/xml'
+              },
+              body
+            });
+
+            if (crearStore.ok) {
+              log.textContent += `📦 Store '${storeName}' creado correctamente\n`;
+            } else {
+              const texto = await crearStore.text();
+              log.textContent += `❌ Error creando store '${storeName}': ${crearStore.status} ${texto}\n`;
+            }
+          } else {
+            const texto = await checkStore.text();
+            log.textContent += `❌ Error verificando store '${storeName}': ${checkStore.status} ${texto}\n`;
+          }
+
+        } catch (err) {
+          log.textContent += `❌ ${archivo.name}: error ${err.message}\n`;
+        }
+      }
+
+      log.textContent += `🎯 Procesamiento finalizado. No se publicaron capas WMS automáticamente.\n`;
+    });
+  </script>
+</body>
+</html>
